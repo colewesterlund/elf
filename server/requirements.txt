@@ -1,0 +1,11 @@
+fastapi==0.150.0
+uvicorn[standard]==0.54.0
+pydantic==2.14.1
+pyyaml==6.0.3
+# Required by FastAPI for form/file upload endpoints (rule zip import
+# POST /rules/import, companion files POST /agent/files).
+python-multipart==0.0.32
+# Authentication: bcrypt password hashing for human users.
+bcrypt==5.0.0
+# Authentication: HMAC-signed session cookies for human login.
+itsdangerous==2.2.0

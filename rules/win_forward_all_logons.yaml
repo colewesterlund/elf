@@ -1,0 +1,23 @@
+title: Forward All Logons
+id: win_forward_all_logons
+status: stable
+description: Continuously forwards every successful logon (4624) to the SIEM.
+author: ELF
+date: 2026-10-01
+level: low
+tags:
+  - attack.persistence
+  - attack.t1078
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 4624
+  condition: selection
+falsepositives:
+  - Normal user logons
+elf:
+  actions:
+    - type: forward_event
+      destination: siem

@@ -1,0 +1,30 @@
+title: SSH Brute Force
+id: lin_ssh_brute_force
+status: stable
+description: Fires when 5 failed SSH logins for one user occur within 60 seconds.
+author: ELF
+date: 2026-10-20
+level: high
+tags:
+  - attack.credential_access
+  - attack.t1110
+logsource:
+  product: linux
+  service: sshd
+detection:
+  selection:
+    Message|startswith: 'Failed '
+  condition: selection
+falsepositives:
+  - Users mistyping passwords
+  - Automation with an expired key
+elf:
+  threshold: 5
+  timeframe: 60s
+  group_by: Computer
+  actions:
+    - type: alert
+      destination: alerts
+      message: "Possible SSH brute force: 5 failed logins within 60s."
+    - type: forward_buffer
+      destination: siem

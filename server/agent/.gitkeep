@@ -1,0 +1,11 @@
+# Place the prebuilt agent binary here before building the Docker image.
+# It is baked into the image and seeded into the data volume on every
+# container start, so a fresh install ships with a working agent.
+#
+# Expected file (copy from your build machine):
+#   efficient_log_forwarder.exe   (from build/Release/)
+#
+# The exe is statically linked (/MT); no VC++ runtime DLLs are needed.
+# The exe itself is ignored by git. If this folder is empty, the image
+# builds fine but GET /agent/binary returns 404 and the install script
+# cannot run; rebuild the image with the exe staged.

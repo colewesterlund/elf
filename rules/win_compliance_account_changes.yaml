@@ -1,0 +1,42 @@
+title: Forward Account, Group and Permission Changes
+id: win_compliance_account_changes
+status: stable
+description: Continuously forwards the Security events auditors ask for - user accounts created, enabled, disabled or deleted, password resets, group membership changes, object permission changes and audit policy changes - so the SIEM keeps a complete record regardless of which detection rules fire.
+author: ELF
+date: 2026-10-01
+level: informational
+tags:
+  - attack.persistence
+  - attack.t1098
+  - attack.t1136.001
+  - attack.defense_evasion
+  - attack.t1562.002
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID:
+      - 4720   # user account created
+      - 4722   # user account enabled
+      - 4723   # password change attempted
+      - 4724   # password reset attempted
+      - 4725   # user account disabled
+      - 4726   # user account deleted
+      - 4728   # member added to a security-enabled global group
+      - 4729   # member removed from a security-enabled global group
+      - 4732   # member added to a security-enabled local group
+      - 4733   # member removed from a security-enabled local group
+      - 4756   # member added to a security-enabled universal group
+      - 4757   # member removed from a security-enabled universal group
+      - 4670   # permissions on an object were changed
+      - 4719   # system audit policy was changed
+      - 4738   # user account was changed
+      - 4740   # user account was locked out
+  condition: selection
+falsepositives:
+  - Routine administration; this rule is for record keeping, not alerting
+elf:
+  actions:
+    - type: forward_event
+      destination: siem

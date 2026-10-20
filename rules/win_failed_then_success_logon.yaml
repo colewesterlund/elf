@@ -1,0 +1,36 @@
+title: Failed Then Success Logon
+id: win_failed_then_success_logon
+status: stable
+description: A failed logon (4625) followed by a success (4624) within 2 minutes.
+author: ELF
+date: 2026-10-01
+level: medium
+tags:
+  - attack.credential_access
+  - attack.t1078
+logsource:
+  product: windows
+  service: security
+detection:
+  selection_failed:
+    EventID: 4625
+  selection_success:
+    EventID: 4624
+  condition: selection_failed or selection_success
+falsepositives:
+  - User mistypes password then succeeds
+elf:
+  timeframe: 120s
+  sequence:
+    - selection:
+        EventID: 4625
+      condition: selection
+    - selection:
+        EventID: 4624
+      condition: selection
+  actions:
+    - type: alert
+      destination: alerts
+      message: "Failed logon followed by success. Possible credential compromise."
+    - type: forward_buffer
+      destination: data_lake

@@ -1,0 +1,9 @@
+# Keep local test artifacts and build output out of the image (COPY . .).
+*.db
+*.db-wal
+*.db-shm
+__pycache__/
+*.pyc
+agent/*.prev
+logs.txt
+.venv/

@@ -1,0 +1,32 @@
+[Unit]
+Description=Efficient Log Forwarder agent
+Documentation=https://github.com/colewesterlund/elf
+After=network-online.target systemd-journald.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=elf
+Group=elf
+# Reading the journal needs membership in systemd-journal; the install
+# script adds the service account to it as well.
+SupplementaryGroups=systemd-journal
+Environment=ELF_CONFIG=/etc/elf/config.ini
+ExecStart=/opt/elf/elf-agent
+Restart=on-failure
+RestartSec=30
+# The agent writes only under /var/lib/elf (logs, spool, cursor, rules).
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/elf
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+
+[Install]
+WantedBy=multi-user.target

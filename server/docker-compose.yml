@@ -1,0 +1,75 @@
+services:
+  elf-server:
+    # Build from this directory (stage the agent exe in server/agent/ first),
+    # or comment `build:` out and use the published image, which already
+    # carries the matching agent exe:
+    #   image: ghcr.io/colewesterlund/elf-server:v1.0.0
+    build: .
+    container_name: elf-server
+    ports:
+      - "8000:8000"
+    volumes:
+      - elf-data:/data
+    environment:
+      - ELF_DB_PATH=/data/elf.db
+      # 0 (default) keeps the SQLite DB across restarts/redeploys (agents,
+      # rules, alerts, logs). Set to 1 to wipe it on every container start.
+      - ELF_RESET_DB=0
+      # Where the prebuilt agent exe is stored for offline installs.
+      - ELF_AGENT_BINARY_DIR=/data/agent
+      # The host new agents should contact. Set this to the Docker host's IP
+      # (or a hostname) when the container is behind port mapping so generated
+      # install scripts point at a reachable address. Leave blank to use the
+      # request's hostname.
+      - ELF_PUBLIC_HOST=
+      - ELF_PUBLIC_PORT=8000
+      # 1 adds three demo groups (workstations, servers, tier-0) with the
+      # kill-chain rules, lists and destinations, for a lab. Off, the
+      # instance has the default group (Windows samples) and linux-servers
+      # (Linux samples), which are seeded regardless of this flag.
+      - ELF_SEED_TEST_DATA=0
+      # --- Docker hardening ---
+      # Enforce agent enrollment tokens. When "1", every agent-
+      # facing endpoint requires a per-agent Bearer token. Set to "0" only
+      # for isolated test environments.
+      - ELF_REQUIRE_AGENT_TOKEN=1
+      # Set a strong seeded-admin password. The server warns on startup if
+      # this is unset or weak. Change immediately from the Users tab.
+      - ELF_ADMIN_PASSWORD=${ELF_ADMIN_PASSWORD:-admin}
+    # --- Docker hardening ---
+    # Run with minimal kernel capabilities. The server only needs network +
+    # filesystem access. The entrypoint runs as root briefly to chown the
+    # data volume (a pre-existing volume may be root-owned) before dropping
+    # to the elf user via gosu. CHOWN/DAC_OVERRIDE/FOWNER let root
+    # chown the volume; SETUID/SETGID let gosu call setuid()/setgid() to drop
+    # to the elf user. Without SETUID/SETGID the kernel returns EPERM on the
+    # setuid() syscall even for UID 0 when cap_drop: ALL has stripped them.
+    # All other capabilities (raw sockets, ptrace, module loading, etc.) are
+    # dropped.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETUID
+      - SETGID
+    # Read-only root filesystem. The app writes only to /data (a tmpfs/volume),
+    # so the root filesystem can be immutable. This blocks attackers from
+    # modifying application code or system config even if they get RCE.
+    read_only: true
+    # tmpfs for /tmp (uvicorn/python may need writable temp space).
+    tmpfs:
+      - /tmp:size=64m
+    # No new privileges: prevents the process from gaining more privileges
+    # via setuid binaries.
+    security_opt:
+      - no-new-privileges:true
+    # Resource limits to prevent runaway memory/CPU from taking down the host.
+    mem_limit: 1g
+    cpus: 2.0
+    # Limit restarts to avoid crash loops hammering the host.
+    restart: unless-stopped
+
+volumes:
+  elf-data:

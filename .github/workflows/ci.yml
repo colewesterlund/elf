@@ -1,0 +1,367 @@
+name: CI
+
+# Continuous Integration for the Efficient Log Forwarder.
+# Runs on every push to main/master and on every pull request.
+# Jobs:
+#   1. agent-build-test:  Build the C++ agent (MSVC) + run test_rule_engine.
+#   2. server-test:       Run Python server smoke tests (FastAPI TestClient).
+#   3. server-docker:     Build the Docker image (validates Dockerfile).
+#   4. security-scan:     pip-audit for Python deps + SBOM freshness check.
+#   5. release:           on a v* tag, publish the agent exe + SHA256SUMS.
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────────
+  # Job 1: Build + test the C++ agent on Windows.
+  # ──────────────────────────────────────────────────────────────────────
+  agent-build-test:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure CMake
+        # yaml-cpp 0.8.0 uses cmake_minimum_required(3.5) which CMake 4.x
+        # rejects unless the policy version minimum is lowered.
+        run: |
+          cmake -S . -B build `
+            "-DCMAKE_POLICY_VERSION_MINIMUM=3.5" `
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build agent + tests
+        run: cmake --build build --config Release
+
+      - name: Run C++ tests
+        # test_rule_engine writes to build/Release/test_rules/ and resolves
+        # file:// destinations relative to cwd, so run from that directory.
+        working-directory: build/Release
+        run: |
+          .\test_rule_engine.exe
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "C++ tests failed with exit code $LASTEXITCODE"
+            exit 1
+          }
+
+      - name: Scale timing (informational)
+        # 3,000 synthetic rules + 2,000 events; prints µs/event into the log.
+        # Never fails the build: a loaded shared runner is not a benchmark box.
+        working-directory: build/Release
+        continue-on-error: true
+        env:
+          ELF_SCALE_TEST: "1"
+        run: .\test_rule_engine.exe | Select-String -Pattern '\[scale\]|passed'
+
+      - name: Package artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item build\Release\efficient_log_forwarder.exe dist\
+          Copy-Item build\Release\test_rule_engine.exe dist\
+          .\build\Release\efficient_log_forwarder.exe --version | Tee-Object dist\VERSION.txt
+          Get-FileHash dist\*.exe -Algorithm SHA256 |
+            ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) } |
+            Set-Content -Encoding ascii dist\SHA256SUMS.txt
+          Get-Content dist\SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: elf-agent-windows
+          path: dist/
+          if-no-files-found: error
+
+  # ──────────────────────────────────────────────────────────────────────
+  # Job 1b: Build the Linux agent (journal + libcurl platform layer).
+  # ──────────────────────────────────────────────────────────────────────
+  agent-build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake g++ pkg-config libsystemd-dev libcurl4-openssl-dev
+
+      - name: Configure and build
+        run: |
+          cmake -S . -B build -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release -j"$(nproc)"
+          ./build/efficient_log_forwarder --version
+
+      - name: Run C++ tests
+        # The portable engine, format and forwarder tests plus the journal
+        # renderer and audit joiner section. Runs where it writes its files.
+        working-directory: build
+        run: ./test_rule_engine
+
+      - name: Package artifacts
+        # The Linux binary ships as `elf-agent` (the name the install script
+        # and the console use) with its own checksum file.
+        run: |
+          mkdir -p dist
+          cp build/efficient_log_forwarder dist/elf-agent
+          ./dist/elf-agent --version | tee dist/VERSION-linux.txt
+          (cd dist && sha256sum elf-agent > SHA256SUMS-linux.txt)
+          cat dist/SHA256SUMS-linux.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: elf-agent-linux
+          path: dist/
+          if-no-files-found: error
+
+  # ──────────────────────────────────────────────────────────────────────
+  # Job 2: Python server smoke tests (no Docker needed).
+  # ──────────────────────────────────────────────────────────────────────
+  server-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install httpx esprima  # TestClient backend; JS parser for the inline UI check
+
+      - name: Run smoke tests
+        # The server uses inline TestClient tests (no pytest needed).
+        # This mirrors the local test pattern: import main, exercise endpoints.
+        # The server's defaults are the container paths (/data/elf.db,
+        # /data/agent), which a runner cannot create; point both at /tmp.
+        env:
+          ELF_DB_PATH: /tmp/elf_ci_test.db
+          ELF_AGENT_BINARY_DIR: /tmp/elf_ci_agent
+        run: |
+          python -c "
+          import os, tempfile, time
+          try: os.remove(os.environ['ELF_DB_PATH'])
+          except FileNotFoundError: pass
+          from fastapi.testclient import TestClient
+          import main
+          with TestClient(main.app) as c:
+              # Health
+              assert c.get('/health').status_code == 200
+              # Login as seeded admin
+              r = c.post('/auth/login', json={'username':'admin','password':'admin'})
+              assert r.status_code == 200, f'login failed: {r.status_code} {r.text}'
+              # Create group
+              ts = str(int(time.time()))
+              r = c.post('/groups', json={'name':'ci-'+ts,'description':'CI test'})
+              assert r.status_code == 200, f'group create: {r.status_code} {r.text}'
+              gid = r.json()['id']
+              # Create rule
+              yaml = '''title: CI Test
+          id: 33333333-3333-3333-3333-333333333333
+          logsource:
+            product: windows
+          detection:
+            selection:
+              EventID: 4624
+            condition: selection
+          elf:
+            actions:
+              - type: forward_event
+                destination: file:///output/test.log
+          '''
+              r = c.post(f'/rules?group_id={gid}', json={'rule_id':'ci-'+ts,'yaml_body':yaml,'name':'CI','description':'test','severity':'low','enabled':True})
+              assert r.status_code == 200, f'rule create: {r.status_code} {r.text}'
+              # Audit log
+              r = c.get('/audit?limit=10')
+              assert r.status_code == 200 and len(r.json()) > 0
+              # Input hardening: reject oversized YAML
+              r = c.post('/rules/validate', json={'yaml_body': 'x'*2_000_000})
+              assert r.status_code == 200 and r.json()['valid'] == False
+              # Input hardening: reject long username
+              r = c.post('/auth/login', json={'username':'x'*200,'password':'x'})
+              assert r.status_code == 422
+          print('CI SMOKE TESTS PASSED')
+          "
+
+      - name: Run repo smoke scripts
+        # The standalone TestClient scripts under tests/server (each uses a
+        # throwaway SQLite DB). smoke_wire_format.py covers the agent<->server
+        # wire format: ruleset_hash/known_hash, /logs limits, also_matched,
+        # single-transaction 3,000-rule import, WAL, validator alignment.
+        working-directory: .
+        run: |
+          set -e
+          for s in tests/server/smoke_*.py; do
+            echo "=== $s"
+            python -I "$s"
+          done
+          echo "=== tests/server/check_ui_js.py"
+          python -I tests/server/check_ui_js.py
+
+      - name: Browser end-to-end (Playwright + Chromium)
+        # Starts its own server on a free port with a seeded throwaway DB,
+        # then drives every tab in a real browser; console/page errors fail.
+        working-directory: .
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+          python -I tests/server/e2e_ui.py
+
+  # ──────────────────────────────────────────────────────────────────────
+  # Job 3: Build the Docker image (validates Dockerfile + compose).
+  # ──────────────────────────────────────────────────────────────────────
+  server-docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        working-directory: server
+        run: docker build -t elf-server:ci .
+
+      - name: Validate docker-compose config
+        working-directory: server
+        run: docker compose config -q
+
+  # ──────────────────────────────────────────────────────────────────────
+  # Job 4: Security scanning.
+  # ──────────────────────────────────────────────────────────────────────
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pip-audit
+        run: |
+          python -m pip install --upgrade pip
+          pip install pip-audit
+
+      - name: Audit Python dependencies
+        working-directory: server
+        run: |
+          # Check requirements.txt for known vulnerabilities.
+          # Uses the PyPI vulnerability database (PyPI JSON API / OSV).
+          pip-audit -r requirements.txt --strict
+
+      - name: Check SBOM exists
+        # Ensure the SBOM is present and mentions the pinned versions.
+        run: |
+          if [ ! -f SBOM.md ]; then
+            echo "::error::SBOM.md is missing; see SBOM.md section 5 to regenerate it"
+            exit 1
+          fi
+          # Every pin in requirements.txt must appear in the SBOM table as
+          # "| <name> | <version>" (name match is case-insensitive), and the
+          # two C++ libraries must be listed.
+          fail=0
+          while IFS= read -r line; do
+            pkg="${line%%=*}"; pkg="${pkg%%[*}"; ver="${line##*==}"
+            if ! grep -i "^| *${pkg} *| *${ver}" SBOM.md >/dev/null; then
+              echo "::error::SBOM.md has no row for ${pkg} ${ver} (server/requirements.txt pins it)"
+              fail=1
+            fi
+          done < <(grep -E '^[A-Za-z]' server/requirements.txt)
+          for lib in "yaml-cpp" "nlohmann/json"; do
+            grep -qi "$lib" SBOM.md || { echo "::error::SBOM.md is missing entry for: $lib"; fail=1; }
+          done
+          [ "$fail" -eq 0 ] && echo "SBOM check passed" || exit 1
+
+  # ──────────────────────────────────────────────────────────────────────
+  # Job 5: GitHub Release on a version tag (v1.2.3). Publishes the agent
+  # exe built by job 1 together with SHA256SUMS.txt so a deployer can
+  # verify the binary (it is not Authenticode-signed; see SECURITY.md).
+  # ──────────────────────────────────────────────────────────────────────
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [agent-build-test, agent-build-linux, server-test, server-docker, security-scan]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: elf-agent-windows
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: elf-agent-linux
+          path: dist-linux
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/efficient_log_forwarder.exe
+            dist/SHA256SUMS.txt
+            dist-linux/elf-agent
+            dist-linux/SHA256SUMS-linux.txt
+          generate_release_notes: true
+          body: |
+            Agents: `efficient_log_forwarder.exe` (Windows) and `elf-agent` (Linux, x86_64, glibc).
+
+            Console image: `ghcr.io/${{ github.repository_owner }}/elf-server:${{ github.ref_name }}`
+            (also tagged `latest`). The image carries both agents, so generated
+            install scripts work without staging a binary.
+
+  # ──────────────────────────────────────────────────────────────────────
+  # Job 6: Console image to the GitHub Container Registry on a version
+  # tag. The agent exe from job 1 is staged into server/agent/ first so
+  # the image serves it to new hosts (a plain checkout has no exe).
+  # ──────────────────────────────────────────────────────────────────────
+  publish-image:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [agent-build-test, agent-build-linux, server-test, server-docker, security-scan]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: elf-agent-windows
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: elf-agent-linux
+          path: dist-linux
+
+      - name: Stage both agents into the image context
+        run: |
+          cp dist/efficient_log_forwarder.exe server/agent/
+          cp dist-linux/elf-agent server/agent/
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: server
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/elf-server:${{ github.ref_name }}
+            ghcr.io/${{ github.repository_owner }}/elf-server:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.licenses=MIT

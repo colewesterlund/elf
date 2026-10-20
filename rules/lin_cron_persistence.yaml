@@ -1,0 +1,28 @@
+title: Crontab Edited
+id: lin_cron_persistence
+status: stable
+description: crontab was run to install or edit a user's schedule. Needs the execve audit rule.
+author: ELF
+date: 2026-10-20
+level: medium
+tags:
+  - attack.persistence
+  - attack.t1053.003
+logsource:
+  product: linux
+  category: process_creation
+detection:
+  selection:
+    Image|endswith: '/crontab'
+  filter_list:
+    CommandLine|contains: ' -l'
+  condition: selection and not filter_list
+falsepositives:
+  - Administrators scheduling jobs
+elf:
+  actions:
+    - type: alert
+      destination: alerts
+      message: "crontab edited."
+    - type: forward_buffer
+      destination: siem

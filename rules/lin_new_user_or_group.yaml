@@ -1,0 +1,28 @@
+title: Account Or Group Created
+id: lin_new_user_or_group
+status: stable
+description: A local user or group was created (useradd, groupadd). Compliance forwarding with context.
+author: ELF
+date: 2026-10-20
+level: medium
+tags:
+  - attack.persistence
+  - attack.t1136.001
+logsource:
+  product: linux
+  service: useradd
+detection:
+  selection:
+    Message|startswith:
+      - 'new user'
+      - 'new group'
+  condition: selection
+falsepositives:
+  - Provisioning tools creating accounts
+elf:
+  actions:
+    - type: alert
+      destination: alerts
+      message: "A local account or group was created."
+    - type: forward_buffer
+      destination: siem

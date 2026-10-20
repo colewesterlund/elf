@@ -1,0 +1,23 @@
+title: Forward Sudo Commands
+id: lin_forward_sudo_commands
+status: stable
+description: Continuously forwards every command run through sudo to the SIEM.
+author: ELF
+date: 2026-10-20
+level: low
+tags:
+  - attack.privilege_escalation
+  - attack.t1548.003
+logsource:
+  product: linux
+  service: sudo
+detection:
+  selection:
+    Message|contains: 'COMMAND='
+  condition: selection
+falsepositives:
+  - Normal administration
+elf:
+  actions:
+    - type: forward_event
+      destination: siem

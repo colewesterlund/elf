@@ -1,0 +1,29 @@
+build/
+*.exe
+*.pdb
+.vs/
+output/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Local databases (server/elf.db lives in the Docker volume; local copies are test artifacts)
+*.db
+*.db-wal
+*.db-shm
+
+# Agent run artifacts
+run.out
+run.err
+debug.log
+*.jsonl
+
+# Test-run scratch dirs (tests write these under build/Release, but a run from the repo root leaves them here)
+test_rules*/
+test_lists*/
+test_cfg_*/
+test_loglevel/
+test_logrotate/
+server/agent/*.prev

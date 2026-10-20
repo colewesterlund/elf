@@ -1,0 +1,39 @@
+title: Ping Sweep - 5 Unique Destinations in 30s
+id: win_ping_sweep_unique_dst
+status: test
+level: medium
+description: >
+  Five or more unique destination IPs contacted via allowed outbound ICMP
+  (WFP event 5156, Protocol 1) from one host within 30 seconds. Uses
+  elf.distinct so repeated pings to a single host never fire the rule.
+references:
+  - https://attack.mitre.org/techniques/T1046/
+tags:
+  - attack.discovery
+  - attack.t1046
+logsource:
+  product: windows
+  service: security
+detection:
+  selection:
+    EventID: 5156
+    Protocol: 1
+  filter_multicast:
+    DestAddress|cidr:
+      - 224.0.0.0/4
+      - 255.255.255.255/32
+  condition: selection and not filter_multicast
+falsepositives:
+  - Legitimate network diagnostics pinging multiple gateways or hosts
+  - Monitoring software probing a subnet
+elf:
+  threshold: 5
+  timeframe: 30s
+  group_by: Computer
+  distinct: DestAddress
+  actions:
+    - type: alert
+      destination: alerts
+      message: "Ping sweep: 5 unique destination IPs within 30s from one host."
+    - type: forward_buffer
+      destination: siem

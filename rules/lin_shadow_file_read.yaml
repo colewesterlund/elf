@@ -1,0 +1,35 @@
+title: Shadow File Read
+id: lin_shadow_file_read
+status: stable
+description: A process started with /etc/shadow on its command line. Needs the execve audit rule.
+author: ELF
+date: 2026-10-20
+level: high
+tags:
+  - attack.credential_access
+  - attack.t1003.008
+logsource:
+  product: linux
+  category: process_creation
+detection:
+  selection:
+    CommandLine|contains: '/etc/shadow'
+  filter_system:
+    Image|endswith:
+      - '/unix_chkpwd'
+      - '/passwd'
+      - '/chage'
+      - '/usermod'
+      - '/useradd'
+      - '/userdel'
+      - '/pwck'
+  condition: selection and not filter_system
+falsepositives:
+  - Backup jobs that copy /etc (allowlist the backup binary)
+elf:
+  actions:
+    - type: alert
+      destination: alerts
+      message: "/etc/shadow named on a command line."
+    - type: forward_buffer
+      destination: siem
